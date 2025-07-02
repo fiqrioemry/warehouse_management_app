@@ -1,5 +1,7 @@
-require("dotenv").config();
-const nodemailer = require("nodemailer");
+import { config } from "dotenv";
+import nodemailer from "nodemailer";
+
+config();
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -10,4 +12,4 @@ const transporter = nodemailer.createTransport({
   tls: { rejectUnauthorized: false },
 });
 
-module.exports = transporter;
+export default transporter;

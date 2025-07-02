@@ -1,12 +1,13 @@
-// server/src/config/cloudinary.ts
-require("dotenv").config();
-const cloudinary = require("cloudinary").v2;
+import { config } from "dotenv";
+import cloudinary from "cloudinary";
 
-cloudinary.config({
+config(); // ✅ Load .env
+
+cloudinary.v2.config({
   secure: true,
   api_key: process.env.CLOUDINARY_API_KEY!,
   api_secret: process.env.CLOUDINARY_API_SECRET!,
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
 });
 
-module.exports = cloudinary;
+export default cloudinary;
