@@ -1,0 +1,10 @@
+// .gitignore
+# Ignore environment files
+.env
+server/.env
+client/.env
+
+# Ignore node_modules
+node_modules/
+server/node_modules/
+client/node_modules/
