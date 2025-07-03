@@ -1,8 +1,8 @@
 // server/src/config/redis.ts
-import { config } from "dotenv";
 import Redis from "ioredis";
 
-config();
+import dotenv from "dotenv";
+dotenv.config();
 
 const { REDIS_PORT, REDIS_HOST } = process.env;
 
