@@ -1,6 +1,6 @@
 import transporter from "../config/nodemailer";
 
-async function sendOTP(to: string, otp: string): Promise<void> {
+async function sendEmail(to: string, otp: string): Promise<void> {
   const mailOptions = {
     from: `"No Reply" <${process.env.MAIL_USER}>`,
     to,
@@ -11,4 +11,4 @@ async function sendOTP(to: string, otp: string): Promise<void> {
   await transporter.sendMail(mailOptions);
 }
 
-export default sendOTP;
+export default sendEmail;

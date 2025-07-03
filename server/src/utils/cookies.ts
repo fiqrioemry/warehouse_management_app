@@ -3,7 +3,7 @@ import { Response } from "express";
 const setAccessTokenCookie = (
   res: Response,
   token: string,
-  maxAge: number = 15 * 60 * 1000
+  maxAge: number = 60 * 60 * 1000
 ) => {
   res.cookie("access_token", token, {
     httpOnly: true,
