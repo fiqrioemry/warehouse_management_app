@@ -1,19 +1,22 @@
 // server/src/controllers/user.controller.ts
-import { config } from "dotenv";
 import { JwtPayload } from "jsonwebtoken";
 import { verifyToken } from "../utils/jwt";
 import userService from "../services/user.service";
 import { Request, Response, NextFunction } from "express";
 import { ResponseError } from "../middleware/error.middleware";
 import { clearAuthCookies, setAccessTokenCookie } from "../utils/cookies";
+import { logAudit } from "../utils/auditLog";
 
-config();
+import dotenv from "dotenv";
+dotenv.config();
 
-async function sendOTP(req: Request, res: Response, next: NextFunction) {
+async function resendOTP(req: Request, res: Response, next: NextFunction) {
   try {
-    const request = req.body;
-    const result = await userService.sendOTP(request);
-    res.status(200).json({ message: result });
+    const request = req.body.email;
+
+    const message = await userService.sendOTP(request);
+
+    res.status(200).json({ message });
   } catch (e) {
     next(e);
   }
@@ -22,10 +25,20 @@ async function sendOTP(req: Request, res: Response, next: NextFunction) {
 async function verifyOTP(req: Request, res: Response, next: NextFunction) {
   try {
     const request = req.body;
-    const result = await userService.verifyOTP(request);
-    res.cookie("access_token", result.tokens.access_token);
-    res.cookie("refresh_token", result.tokens.refresh_token);
-    res.status(200).json({ message: "User registered successfully" });
+
+    const result = await userService.verifyOTP(request, res);
+
+    await logAudit({
+      req,
+      target: "User",
+      action: "Register",
+      targetId: result.user.id,
+      userId: result.user.id,
+    });
+
+    res
+      .status(200)
+      .json({ message: "User registered successfully", data: result });
   } catch (e) {
     next(e);
   }
@@ -33,10 +46,10 @@ async function verifyOTP(req: Request, res: Response, next: NextFunction) {
 
 async function register(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await userService.register(req.body);
+    await userService.register(req.body);
 
     res.status(201).json({
-      data: result,
+      message: "OTP sent to email, please verify to complete registration",
     });
   } catch (e) {
     next(e);
@@ -45,9 +58,18 @@ async function register(req: Request, res: Response, next: NextFunction) {
 
 async function login(req: Request, res: Response, next: NextFunction) {
   try {
-    const result = await userService.login(req.body);
+    const result = await userService.login(req.body, res);
+
+    await logAudit({
+      req,
+      userId: result.user.id,
+      action: "Login",
+      target: "User",
+      targetId: result.user.id,
+    });
 
     res.status(200).json({
+      message: "Login successfully",
       data: result,
     });
   } catch (e) {
@@ -67,9 +89,11 @@ async function refresh(req: Request, res: Response, next: NextFunction) {
 
     const result = await userService.refresh(decoded.id, refreshToken);
 
-    setAccessTokenCookie(res, result.access_token, 60 * 60 * 1000); // 1 hour
+    setAccessTokenCookie(res, result.accessToken); // 1 hour
 
-    res.status(200).json({ data: result });
+    res
+      .status(200)
+      .json({ message: "Token refreshed successfully", data: result });
   } catch (e) {
     next(e);
   }
@@ -97,6 +121,7 @@ async function get(req: Request, res: Response, next: NextFunction) {
 
     res.status(200).json({
       data: result,
+      message: "User retrieved successfully",
     });
   } catch (e) {
     next(e);
@@ -110,8 +135,18 @@ async function update(req: Request, res: Response, next: NextFunction) {
     request.id = userId;
 
     const result = await userService.update(request);
+
+    await logAudit({
+      req,
+      userId,
+      action: "update profile",
+      target: "User",
+      targetId: result.user.id,
+    });
+
     res.status(200).json({
       data: result,
+      message: "User updated successfully",
     });
   } catch (e) {
     next(e);
@@ -119,7 +154,7 @@ async function update(req: Request, res: Response, next: NextFunction) {
 }
 
 export default {
-  sendOTP,
+  resendOTP,
   verifyOTP,
   register,
   login,

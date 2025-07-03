@@ -1,5 +1,6 @@
 // server/src/service/user-service.ts
 import bcrypt from "bcrypt";
+import { Response } from "express";
 import { generateToken } from "../utils/jwt";
 import { PrismaClient } from "@prisma/client";
 import getRandomUserAvatar from "../utils/avatar";
@@ -9,18 +10,13 @@ import { uploadToCloudinary, deleteFromCloudinary } from "../utils/uploader";
 const prisma = new PrismaClient();
 import redis from "../config/redis";
 import sendEmail from "../utils/mailer";
+import { setAccessTokenCookie, setRefreshTokenCookie } from "../utils/cookies";
 
 interface RegisterRequest {
   email: string;
   password: string;
   fullname: string;
   role?: "ADMIN" | "STAFF" | "USER";
-}
-
-interface sendOTPRequest {
-  email: string;
-  password: string;
-  fullname: string;
 }
 
 interface VerifyOTPRequest {
@@ -41,30 +37,33 @@ interface UpdateRequest {
 
 class UserService {
   // sendOTP: SendOTPRequest;
-  async sendOTP(request: sendOTPRequest) {
-    const { email, password, fullname } = request;
+  async sendOTP(email: string) {
+    const tempData = await redis.get(`warehouse_app:otp_data:${email}`);
+    if (!tempData) throw new ResponseError(404, "OTP data not found");
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    // check otp resend attempt limit
+    const limitKey = `warehouse_app:otp_resend_limit:${email}`;
+    const count = parseInt((await redis.get(limitKey)) || "0", 10);
+    if (count >= 3) {
+      throw new ResponseError(429, "Too many OTP requests");
+    }
 
-    if (existing) throw new ResponseError(400, "Email already registered");
+    // add count and set expiration
+    await redis.incr(limitKey);
+    await redis.expire(limitKey, 1800); // 30 menit
 
+    // Generate new OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await redis.setex(`warehouse_app:otp:${email}`, 300, otp); // 5 menit
 
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const tempData = JSON.stringify({ fullname, password: hashedPassword });
-
-    await redis.setex(`otp:${email}`, 300, otp); // 5 menit
-
-    await redis.setex(`otp_data:${email}`, 1800, tempData); // 30 menit
-
+    // resend otp via email
     await sendEmail(email, otp);
 
-    return "OTP sent to email";
+    return "OTP resent to your email";
   }
 
   //   verifyOTP: VerifyOTPRequest;
-  async verifyOTP(request: VerifyOTPRequest) {
+  async verifyOTP(request: VerifyOTPRequest, res: Response) {
     const { email, otp } = request;
 
     const savedOtp = await redis.get(`otp:${email}`);
@@ -72,10 +71,11 @@ class UserService {
     if (!savedOtp || savedOtp !== otp)
       throw new ResponseError(401, "Invalid or expired OTP");
 
-    const dataStr = await redis.get(`otp_data:${email}`);
-    if (!dataStr) throw new ResponseError(401, "Session expired");
+    const tempData = await redis.get(`warehouse_app:otp_data:${email}`);
+    if (!tempData)
+      throw new ResponseError(401, "Session expired, please try again");
 
-    const { fullname, password } = JSON.parse(dataStr);
+    const { fullname, password } = JSON.parse(tempData);
 
     const newUser = await prisma.user.create({
       data: {
@@ -105,80 +105,73 @@ class UserService {
     );
 
     await redis.setex(
-      `refresh_token:${newUser.id}`,
+      `warehouse_app:refresh_token:${newUser.id}`,
       60 * 60 * 24 * 7,
       refreshToken
     ); // 7 hari
 
-    await redis.del(`otp:${email}`);
+    await redis.del(`warehouse_app:otp:${email}`);
 
-    await redis.del(`otp_data:${email}`);
+    await redis.del(`warehouse_app:otp_data:${email}`);
+
+    setAccessTokenCookie(res, accessToken);
+
+    setRefreshTokenCookie(res, refreshToken);
 
     return {
       user: newUser,
-      tokens: { access_token: accessToken, refresh_token: refreshToken },
+      accessToken: accessToken,
     };
   }
 
   // register: RegisterRequest;
   async register(request: RegisterRequest) {
+    const { email, password, fullname } = request;
+
     const existingUser = await prisma.user.findUnique({
-      where: { email: request.email },
+      where: { email },
     });
 
-    if (existingUser) {
-      throw new ResponseError(400, "Email already registered");
-    }
+    if (existingUser) throw new ResponseError(400, "Email already registered");
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(request.password, 12);
+    const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Generate avatar
-    const avatarUrl = getRandomUserAvatar(request.fullname);
+    // generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Create user
-    const user = await prisma.user.create({
-      data: {
-        email: request.email,
-        password: hashedPassword,
-        fullname: request.fullname,
-        role: "USER",
-        avatar: avatarUrl,
-      },
-      select: {
-        id: true,
-        email: true,
-        fullname: true,
-        role: true,
-        avatar: true,
-        createdAt: true,
-      },
-    });
+    const tempData = JSON.stringify({ fullname, password: hashedPassword });
 
-    return {
-      message: "User registered successfully",
-      user,
-    };
+    await redis.setex(`warehouse_app:otp:${email}`, 300, otp); // 5 menit
+
+    await redis.setex(`warehouse_app:otp_data:${email}`, 1800, tempData); // 30 menit
+
+    // send email
+    await sendEmail(email, otp);
+
+    return;
   }
 
   // login: LoginRequest;
-  async login(request: LoginRequest) {
-    const redisKey = `login:attempt:${request.email}`;
+  async login(request: LoginRequest, res: Response) {
+    const { email, password } = request;
+
+    const redisKey = `warehouse_app:login:attempt:${email}`;
 
     const attempts = parseInt((await redis.get(redisKey)) || "0");
-    if (attempts >= 5) {
+
+    if (attempts >= 5)
       throw new ResponseError(
         429,
         "Too many login attempts. Please try again in 30 minutes."
       );
-    }
 
     const user = await prisma.user.findUnique({
-      where: { email: request.email },
+      where: { email },
     });
 
     const isPasswordValid =
-      user && (await bcrypt.compare(request.password, user.password));
+      user && (await bcrypt.compare(password, user.password));
 
     if (!user || !isPasswordValid) {
       await redis.incr(redisKey);
@@ -189,7 +182,7 @@ class UserService {
     await redis.del(redisKey);
 
     const payload = {
-      userId: user.id,
+      id: user.id,
       email: user.email,
       role: user.role,
     };
@@ -209,11 +202,13 @@ class UserService {
       `refresh_token:${user.id}`,
       7 * 24 * 60 * 60,
       refreshToken
-    ); // 7 hari
+    );
+
+    setAccessTokenCookie(res, accessToken);
+
+    setRefreshTokenCookie(res, refreshToken);
 
     return {
-      message: "Login successful",
-      tokens: { access_token: accessToken, refresh_token: refreshToken },
       user: {
         id: user.id,
         email: user.email,
@@ -221,20 +216,22 @@ class UserService {
         role: user.role,
         avatar: user.avatar,
       },
+      accessToken: accessToken,
     };
   }
 
   async logout(userId: string) {
-    await redis.del(`refresh_token:${userId}`);
-    return { message: "Logout successful" };
+    await redis.del(`warehouse_app:refresh_token:${userId}`);
   }
 
   // refresh token
   async refresh(userId: string, refreshToken: string) {
-    const storedToken = await redis.get(`refresh_token:${userId}`);
+    const storedToken = await redis.get(
+      `warehouse_app:refresh_token:${userId}`
+    );
 
     if (!storedToken || storedToken !== refreshToken) {
-      await redis.del(`refresh_token:${userId}`);
+      await redis.del(`warehouse_app:refresh_token:${userId}`);
       throw new ResponseError(401, "Invalid or expired refresh token");
     }
 
@@ -254,8 +251,7 @@ class UserService {
     );
 
     return {
-      message: "Token refreshed successfully",
-      access_token: newAccessToken,
+      accessToken: newAccessToken,
     };
   }
 
@@ -277,10 +273,7 @@ class UserService {
       throw new ResponseError(404, "User not found");
     }
 
-    return {
-      message: "User retrieved successfully",
-      user,
-    };
+    return { user };
   }
 
   async update(request: UpdateRequest) {
@@ -331,10 +324,7 @@ class UserService {
       },
     });
 
-    return {
-      message: "User updated successfully",
-      user: updatedUser,
-    };
+    return { user: updatedUser };
   }
 }
 
