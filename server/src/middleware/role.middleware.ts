@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from "express";
 
 const roleOnly = (...allowedRoles: string[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const role = req.user?.role;
+    const role = (req as any).user.role;
 
     if (!role) {
       res.status(401).json({ message: "Unauthorized: Role not found" });

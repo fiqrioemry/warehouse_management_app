@@ -33,7 +33,7 @@ const fileFilter = (params: FileType) => {
 function upload(params: FileType = "image", size?: number): Multer {
   return multer({
     storage,
-    limits: { fileSize: size || 5 * 1024 * 1024 }, // default 5MB
+    limits: { fileSize: size || 2 * 1024 * 1024 }, // default 5MB
     fileFilter: fileFilter(params),
   });
 }
